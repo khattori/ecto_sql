@@ -316,7 +316,7 @@ defmodule Ecto.Adapters.SQL.Sandbox do
       raise "should never be invoked"
     end
 
-    def disconnect(err, {conn_mod, state, _in_transaction?}) do
+    def disconnect(err, {conn_mod, state, _in_transaction?, _savepoint?}) do
       conn_mod.disconnect(err, state)
     end
 
@@ -324,23 +324,26 @@ defmodule Ecto.Adapters.SQL.Sandbox do
     def checkin(state), do: proxy(:checkin, state, [])
     def ping(state), do: proxy(:ping, state, [])
 
-    def handle_begin(opts, {conn_mod, state, false}) do
+    def handle_begin(opts, {conn_mod, state, in_transaction?, false}) do
+      savepoint? = Keyword.get(opts, :mode) == :savepoint
+      if in_transaction? and not savepoint? do
+        raise "should be savepoint mode"
+      end
       opts = [mode: :savepoint] ++ opts
-
       case conn_mod.handle_begin(opts, state) do
         {:ok, value, state} ->
-          {:ok, value, {conn_mod, state, true}}
+          {:ok, value, {conn_mod, state, true, savepoint?}}
         {kind, err, state} ->
-          {kind, err, {conn_mod, state, false}}
+          {kind, err, {conn_mod, state, false, false}}
       end
     end
-    def handle_commit(opts, {conn_mod, state, true}) do
+    def handle_commit(opts, {conn_mod, state, true, savepoint?}) do
       opts = [mode: :savepoint] ++ opts
-      proxy(:handle_commit, {conn_mod, state, false}, [opts])
+      proxy(:handle_commit, {conn_mod, state, savepoint?, false}, [opts])
     end
-    def handle_rollback(opts, {conn_mod, state, _}) do
+    def handle_rollback(opts, {conn_mod, state, in_transaction?, savepoint?}) do
       opts = [mode: :savepoint] ++ opts
-      proxy(:handle_rollback, {conn_mod, state, false}, [opts])
+      proxy(:handle_rollback, {conn_mod, state, savepoint? and in_transaction?, false}, [opts])
     end
 
     def handle_status(opts, state),
@@ -358,7 +361,7 @@ defmodule Ecto.Adapters.SQL.Sandbox do
     def handle_deallocate(query, cursor, opts, state),
       do: proxy(:handle_deallocate, state, [query, cursor, maybe_savepoint(opts, state)])
 
-    defp maybe_savepoint(opts, {_, _, in_transaction?}) do
+    defp maybe_savepoint(opts, {_, _, in_transaction?, _savepoint?}) do
       if not in_transaction? and Keyword.get(opts, :sandbox_subtransaction, true) do
         [mode: :savepoint] ++ opts
       else
@@ -366,10 +369,10 @@ defmodule Ecto.Adapters.SQL.Sandbox do
       end
     end
 
-    defp proxy(fun, {conn_mod, state, in_transaction?}, args) do
+    defp proxy(fun, {conn_mod, state, in_transaction?, savepoint?}, args) do
       result = apply(conn_mod, fun, args ++ [state])
       pos = :erlang.tuple_size(result)
-      :erlang.setelement(pos, result, {conn_mod, :erlang.element(pos, result), in_transaction?})
+      :erlang.setelement(pos, result, {conn_mod, :erlang.element(pos, result), in_transaction?, savepoint?})
     end
   end
 
@@ -555,14 +558,14 @@ defmodule Ecto.Adapters.SQL.Sandbox do
   defp post_checkout(conn_mod, conn_state, opts) do
     case conn_mod.handle_begin([mode: :transaction] ++ opts, conn_state) do
       {:ok, _, conn_state} ->
-        {:ok, Connection, {conn_mod, conn_state, false}}
+        {:ok, Connection, {conn_mod, conn_state, false, false}}
 
       {_error_or_disconnect, err, conn_state} ->
         {:disconnect, err, conn_mod, conn_state}
     end
   end
 
-  defp pre_checkin(:checkin, Connection, {conn_mod, conn_state, _in_transaction?}, opts) do
+  defp pre_checkin(:checkin, Connection, {conn_mod, conn_state, _in_transaction?, _savepoint?}, opts) do
     case conn_mod.handle_rollback([mode: :transaction] ++ opts, conn_state) do
       {:ok, _, conn_state} ->
         {:ok, conn_mod, conn_state}
@@ -588,7 +591,7 @@ defmodule Ecto.Adapters.SQL.Sandbox do
     end
   end
 
-  defp pre_checkin(_, Connection, {conn_mod, conn_state, _in_transaction?}, _opts) do
+  defp pre_checkin(_, Connection, {conn_mod, conn_state, _in_transaction?, _savepoint?}, _opts) do
     {:ok, conn_mod, conn_state}
   end
 end
