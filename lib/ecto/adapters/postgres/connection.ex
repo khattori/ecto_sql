@@ -100,7 +100,7 @@ if Code.ensure_loaded?(Postgrex) do
       Postgrex.stream(conn, sql, params, opts)
     end
 
-    @parent_as 0
+    @parent_as __MODULE__
     alias Ecto.Query.{BooleanExpr, JoinExpr, QueryExpr, WithExpr}
 
     @impl true
@@ -606,7 +606,7 @@ if Code.ensure_loaded?(Postgrex) do
 
     defp expr(%Ecto.SubQuery{query: query}, sources, _query) do
       query = put_in(query.aliases[@parent_as], sources)
-      [?(, all(query, [?s]), ?)]
+      [?(, all(query, subquery_as_prefix(sources)), ?)]
     end
 
     defp expr({:fragment, _, [kw]}, _sources, query) when is_list(kw) or tuple_size(kw) == 3 do
@@ -764,8 +764,12 @@ if Code.ensure_loaded?(Postgrex) do
       [create_name(sources, pos, as_prefix) | create_names(sources, pos + 1, limit, as_prefix)]
     end
 
-    defp create_names(_sources, pos, pos, _as_prefix) do
-      []
+    defp create_names(_sources, pos, pos, as_prefix) do
+      [as_prefix]
+    end
+
+    defp subquery_as_prefix(sources) do
+      [?s | :erlang.element(tuple_size(sources), sources)]
     end
 
     defp create_name(sources, pos, as_prefix) do
@@ -1029,10 +1033,10 @@ if Code.ensure_loaded?(Postgrex) do
     defp null_expr(_), do: []
 
     defp new_constraint_expr(%Constraint{check: check} = constraint) when is_binary(check) do
-      ["CONSTRAINT ", quote_name(constraint.name), " CHECK (", check, ")"]
+      ["CONSTRAINT ", quote_name(constraint.name), " CHECK (", check, ")", validate(constraint.validate)]
     end
     defp new_constraint_expr(%Constraint{exclude: exclude} = constraint) when is_binary(exclude) do
-      ["CONSTRAINT ", quote_name(constraint.name), " EXCLUDE USING ", exclude]
+      ["CONSTRAINT ", quote_name(constraint.name), " EXCLUDE USING ", exclude, validate(constraint.validate)]
     end
 
     defp default_expr({:ok, nil}, _type),    do: " DEFAULT NULL"
@@ -1044,7 +1048,7 @@ if Code.ensure_loaded?(Postgrex) do
     end
     defp default_type(literal, _type) when is_binary(literal) do
       if :binary.match(literal, <<0>>) == :nomatch and String.valid?(literal) do
-        [?', escape_string(literal), ?']
+        single_quote(literal)
       else
         encoded = "\\x" <> Base.encode16(literal, case: :lower)
         raise ArgumentError, "default values are interpolated as UTF-8 strings and cannot contain null bytes. " <>

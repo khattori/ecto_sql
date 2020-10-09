@@ -4,6 +4,7 @@ if Code.ensure_loaded?(Tds) do
     require Logger
     alias Tds.Query
     alias Ecto.Query.Tagged
+    alias Ecto.Adapters.SQL
     require Ecto.Schema
 
     @behaviour Ecto.Adapters.SQL.Connection
@@ -128,10 +129,9 @@ if Code.ensure_loaded?(Tds) do
 
     ## Query
 
+    @parent_as __MODULE__
     alias Ecto.Query
     alias Ecto.Query.{BooleanExpr, JoinExpr, QueryExpr, WithExpr}
-
-    @parent_as 0
 
     @impl true
     def all(query, as_prefix \\ []) do
@@ -300,8 +300,28 @@ if Code.ensure_loaded?(Tds) do
     end
 
     @impl true
-    def explain_query(_conn, _query, _params, _opts) do
-      raise Tds.Error, "EXPLAIN is not supported by Ecto.Adapters.TDS at the moment"
+    def explain_query(conn, query, params, opts) do
+      params = prepare_params(params)
+
+      case Tds.query_multi(conn, build_explain_query(query), params, opts) do
+        {:ok, [_, %Tds.Result{} = result, _]} ->
+          {:ok, SQL.format_table(result)}
+
+        error ->
+          error
+      end
+    end
+
+    def build_explain_query(query) do
+      [
+        "SET STATISTICS XML ON; ",
+        "SET STATISTICS PROFILE ON; ",
+        query,
+        "; ",
+        "SET STATISTICS XML OFF; ",
+        "SET STATISTICS PROFILE OFF;"
+      ]
+      |> IO.iodata_to_binary()
     end
 
     ## Query generation
@@ -702,7 +722,7 @@ if Code.ensure_loaded?(Tds) do
 
     defp expr(%Ecto.SubQuery{query: query}, sources, _query) do
       query = put_in(query.aliases[@parent_as], sources)
-      [?(, all(query, [?s]), ?)]
+      [?(, all(query, subquery_as_prefix(sources)), ?)]
     end
 
     defp expr({:fragment, _, [kw]}, _sources, query) when is_list(kw) or tuple_size(kw) == 3 do
@@ -903,8 +923,12 @@ if Code.ensure_loaded?(Tds) do
       [create_name(sources, pos, as_prefix) | create_names(sources, pos + 1, limit, as_prefix)]
     end
 
-    defp create_names(_sources, pos, pos, _as_prefix) do
-      []
+    defp create_names(_sources, pos, pos, as_prefix) do
+      [as_prefix]
+    end
+
+    defp subquery_as_prefix(sources) do
+      [?s | :erlang.element(tuple_size(sources), sources)]
     end
 
     defp create_name(sources, pos, as_prefix) do
@@ -1059,6 +1083,10 @@ if Code.ensure_loaded?(Tds) do
           "set `:check` attribute with negated expression."
 
       error!(nil, msg)
+    end
+
+    def execute_ddl({:create, %Constraint{validate: false}}) do
+      error!(nil, "`:validate` is not supported by the Tds adapter")
     end
 
     def execute_ddl({:create, %Constraint{} = constraint}) do
