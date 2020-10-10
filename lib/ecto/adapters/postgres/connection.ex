@@ -819,6 +819,7 @@ if Code.ensure_loaded?(Postgrex) do
         quote_table(table.prefix, table.name)]]
     end
 
+    def execute_ddl({:alter, %Table{}, []}), do: []
     def execute_ddl({:alter, %Table{} = table, changes}) do
       table_name = quote_table(table.prefix, table.name)
       query = ["ALTER TABLE ", table_name, ?\s,
