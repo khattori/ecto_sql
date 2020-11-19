@@ -1,5 +1,24 @@
 # Changelog for v3.x
 
+## v3.5.2 (2020-10-24)
+
+### Enhancements
+
+  * [migrations] Support `:with` option in `references` for composite foreign keys
+  * [migrations] Support `:match` option in `references`
+  * [tds] Support TDS 3-part and 4-part prefixes
+
+## v3.5.1 (2020-10-12)
+
+### Enhancements
+
+  * [tds] Support explain plan for the TDS adapter
+
+### Bug fix
+
+  * [migrations] Reload all migrations once the lock is free to avoid running the same migration more than once
+  * [query] Support nested subqueries
+
 ## v3.5.0 (2020-10-03)
 
 ### Enhancements
