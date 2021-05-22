@@ -27,7 +27,7 @@ defmodule Ecto.Adapters.SQL do
     * `mix ecto.migrate` - runs a migration
     * `mix ecto.rollback` - rolls back a previously run migration
 
-  If you want to run migrations programatically, see `Ecto.Migrator`.
+  If you want to run migrations programmatically, see `Ecto.Migrator`.
 
   ## SQL sandbox
 
@@ -98,6 +98,11 @@ defmodule Ecto.Adapters.SQL do
       end
 
       @impl true
+      def checked_out?(meta) do
+        Ecto.Adapters.SQL.checked_out?(meta)
+      end
+
+      @impl true
       def loaders({:map, _}, type),   do: [&Ecto.Type.embedded_load(type, &1, :json)]
       def loaders(:binary_id, type),  do: [Ecto.UUID, type]
       def loaders(_, type),           do: [type]
@@ -140,15 +145,15 @@ defmodule Ecto.Adapters.SQL do
       def autogenerate(:binary_id), do: Ecto.UUID.bingenerate()
 
       @impl true
-      def insert_all(adapter_meta, schema_meta, header, rows, on_conflict, returning, opts) do
-        Ecto.Adapters.SQL.insert_all(adapter_meta, schema_meta, @conn, header, rows, on_conflict, returning, opts)
+      def insert_all(adapter_meta, schema_meta, header, rows, on_conflict, returning, placeholders, opts) do
+        Ecto.Adapters.SQL.insert_all(adapter_meta, schema_meta, @conn, header, rows, on_conflict, returning, placeholders, opts)
       end
 
       @impl true
       def insert(adapter_meta, %{source: source, prefix: prefix}, params,
                  {kind, conflict_params, _} = on_conflict, returning, opts) do
         {fields, values} = :lists.unzip(params)
-        sql = @conn.insert(prefix, source, fields, [fields], on_conflict, returning)
+        sql = @conn.insert(prefix, source, fields, [fields], on_conflict, returning, [])
         Ecto.Adapters.SQL.struct(adapter_meta, @conn, sql, :insert, source, [], values ++ conflict_params, kind, returning, opts)
       end
 
@@ -191,7 +196,7 @@ defmodule Ecto.Adapters.SQL do
         Ecto.Adapters.SQL.execute_ddl(meta, @conn, definition, opts)
       end
 
-      defoverridable [prepare: 2, execute: 5, insert: 6, update: 6, delete: 4, insert_all: 7,
+      defoverridable [prepare: 2, execute: 5, insert: 6, update: 6, delete: 4, insert_all: 8,
                       execute_ddl: 3, loaders: 2, dumpers: 2, autogenerate: 1,
                       ensure_all_started: 2, __before_compile__: 1]
     end
@@ -256,7 +261,7 @@ defmodule Ecto.Adapters.SQL do
       iex> Ecto.Adapters.SQL.explain(Repo, :all, Post, analyze: true, timeout: 20_000)
       "Seq Scan on posts p0  (cost=0.00..11.70 rows=170 width=443) (actual time=0.013..0.013 rows=0 loops=1)\\nPlanning Time: 0.031 ms\\nExecution Time: 0.021 ms"
 
-  It's safe to execute it for updates and deletes, no data change will be commited:
+  It's safe to execute it for updates and deletes, no data change will be committed:
 
       iex> Ecto.Adapters.SQL.explain(Repo, :update_all, from(p in Post, update: [set: [title: "new title"]]))
       "Update on posts p0  (cost=0.00..11.70 rows=170 width=449)\\n  ->  Seq Scan on posts p0  (cost=0.00..11.70 rows=170 width=449)"
@@ -281,8 +286,9 @@ defmodule Ecto.Adapters.SQL do
 
   Also note that:
 
-    * `FORMAT` isn't supported at the moment and the only possible output
-      is a textual format, so you may want to call `IO.puts/1` to display it;
+    * Currently `:map`, `:yaml`, and `:text` format options are supported
+      for PostgreSQL. `:map` is the deserialized JSON encoding. The last two
+      options return the result as a string.
     * Any other value passed to `opts` will be forwarded to the underlying
       adapter query function, including Repo shared options such as `:timeout`;
     * Non built-in adapters may have specific behavior and you should consult
@@ -578,7 +584,7 @@ defmodule Ecto.Adapters.SQL do
     Application.ensure_all_started(driver, type)
   end
 
-  @pool_opts [:timeout, :pool, :pool_size, :migration_lock] ++
+  @pool_opts [:timeout, :pool, :pool_size] ++
                [:queue_target, :queue_interval, :ownership_timeout]
 
   @doc false
@@ -635,19 +641,30 @@ defmodule Ecto.Adapters.SQL do
     checkout_or_transaction(:run, adapter_meta, opts, callback)
   end
 
+  @doc false
+  def checked_out?(adapter_meta) do
+    %{pid: pool} = adapter_meta
+    get_conn(pool) != nil
+  end
+
   ## Query
 
   @doc false
-  def insert_all(adapter_meta, schema_meta, conn, header, rows, on_conflict, returning, opts) do
+  def insert_all(adapter_meta, schema_meta, conn, header, rows, on_conflict, returning, placeholders, opts) do
     %{source: source, prefix: prefix} = schema_meta
     {_, conflict_params, _} = on_conflict
-    {rows, params} = unzip_inserts(header, rows)
-    sql = conn.insert(prefix, source, header, rows, on_conflict, returning)
+    {rows, params} = case rows do
+      {%Ecto.Query{} = query, params} -> {query, Enum.reverse(params)}
+      rows -> unzip_inserts(header, rows)
+    end
+
+    sql = conn.insert(prefix, source, header, rows, on_conflict, returning, placeholders)
 
     opts = [{:cache_statement, "ecto_insert_all_#{source}"} | opts]
 
+    all_params = placeholders ++ Enum.reverse(params, conflict_params)
     %{num_rows: num, rows: rows} =
-      query!(adapter_meta, sql, Enum.reverse(params) ++ conflict_params, opts)
+      query!(adapter_meta, sql, all_params, opts)
 
     {num, rows}
   end
@@ -657,10 +674,12 @@ defmodule Ecto.Adapters.SQL do
       Enum.map_reduce header, params, fn key, acc ->
         case :lists.keyfind(key, 1, fields) do
           {^key, {%Ecto.Query{} = query, query_params}} ->
-            {{query, length(query_params)}, Enum.reverse(query_params) ++ acc}
+            {{query, length(query_params)}, Enum.reverse(query_params, acc)}
 
-          {^key, value} ->
-            {key, [value | acc]}
+          {^key, {:placeholder, placeholder_index}} ->
+            {{:placeholder, Integer.to_string(placeholder_index)}, acc}
+
+          {^key, value} -> {key, [value | acc]}
 
           false -> {nil, acc}
         end
@@ -746,13 +765,13 @@ defmodule Ecto.Adapters.SQL do
     opts = with_log(telemetry, params, opts ++ default_opts)
 
     case get_conn(pool) do
-      nil  ->
-        raise "cannot reduce stream outside of transaction"
-
-      conn ->
+      %DBConnection{conn_mode: :transaction} = conn ->
         sql
         |> apply(:stream, [conn, statement, params, opts])
         |> Enumerable.reduce(acc, fun)
+
+      _ ->
+        raise "cannot reduce stream outside of transaction"
     end
   end
 
@@ -762,12 +781,13 @@ defmodule Ecto.Adapters.SQL do
     opts = with_log(telemetry, params, opts ++ default_opts)
 
     case get_conn(pool) do
-      nil ->
-        raise "cannot collect into stream outside of transaction"
-      conn ->
+      %DBConnection{conn_mode: :transaction} = conn ->
         sql
         |> apply(:stream, [conn, statement, params, opts])
         |> Collectable.into()
+
+      _ ->
+        raise "cannot collect into stream outside of transaction"
     end
   end
 

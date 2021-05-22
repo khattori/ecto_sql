@@ -198,7 +198,8 @@ if Code.ensure_loaded?(Tds) do
     end
 
     @impl true
-    def insert(prefix, table, header, rows, on_conflict, returning) do
+    def insert(prefix, table, header, rows, on_conflict, returning, placeholders) do
+      counter_offset = length(placeholders) + 1
       [] = on_conflict(on_conflict, header)
       returning = returning(returning, "INSERTED")
 
@@ -211,8 +212,8 @@ if Code.ensure_loaded?(Tds) do
             ?(,
             quote_names(header),
             ?),
-            returning,
-            " VALUES " | insert_all(rows, 1)
+            returning |
+            insert_all(rows, counter_offset)
           ]
         end
 
@@ -227,12 +228,18 @@ if Code.ensure_loaded?(Tds) do
       error!(nil, "Tds adapter supports only on_conflict: :raise")
     end
 
+    defp insert_all(%Ecto.Query{} = query, _counter) do
+      [?\s, all(query)]
+    end
     defp insert_all(rows, counter) do
-      intersperse_reduce(rows, ",", counter, fn row, counter ->
-        {row, counter} = insert_each(row, counter)
-        {[?(, row, ?)], counter}
-      end)
-      |> elem(0)
+      sql =
+        intersperse_reduce(rows, ",", counter, fn row, counter ->
+          {row, counter} = insert_each(row, counter)
+          {[?(, row, ?)], counter}
+        end)
+        |> elem(0)
+
+      [" VALUES " | sql]
     end
 
     defp insert_each(values, counter) do
@@ -242,6 +249,9 @@ if Code.ensure_loaded?(Tds) do
 
         {%Query{} = query, params_counter}, counter ->
           {[?(, all(query), ?)], counter + params_counter}
+
+        {:placeholder, placeholder_index}, counter ->
+          {[?@ | placeholder_index], counter}
 
         _, counter ->
           {[?@ | Integer.to_string(counter)], counter + 1}
@@ -491,6 +501,8 @@ if Code.ensure_loaded?(Tds) do
     end
 
     defp join_on(:cross, true, _sources, _query), do: []
+    defp join_on(:inner_lateral, true, _sources, _query), do: []
+    defp join_on(:left_lateral, true, _sources, _query), do: []
     defp join_on(_qual, true, _sources, _query), do: [" ON 1 = 1"]
     defp join_on(_qual, expr, sources, query), do: [" ON " | expr(expr, sources, query)]
 
@@ -503,6 +515,8 @@ if Code.ensure_loaded?(Tds) do
     defp join_qual(:right), do: "RIGHT OUTER JOIN "
     defp join_qual(:full), do: "FULL OUTER JOIN "
     defp join_qual(:cross), do: "CROSS JOIN "
+    defp join_qual(:inner_lateral), do: "CROSS APPLY "
+    defp join_qual(:left_lateral), do: "OUTER APPLY "
 
     defp where(%Query{wheres: wheres} = query, sources) do
       boolean(" WHERE ", wheres, sources, query)
@@ -623,7 +637,7 @@ if Code.ensure_loaded?(Tds) do
     defp operator_to_boolean(:or), do: " OR "
 
     defp parens_for_select([first_expr | _] = expr) do
-      if is_binary(first_expr) and String.starts_with?(first_expr, ["SELECT", "select"]) do
+      if is_binary(first_expr) and String.match?(first_expr, ~r/^\s*select/i) do
         [?(, expr, ?)]
       else
         expr
@@ -679,7 +693,7 @@ if Code.ensure_loaded?(Tds) do
       Enum.map_join(fields, ", ", &"#{name}.#{quote_name(&1)}")
     end
 
-    # eaxmple from {:in, [], [1,   {:^, [], [0, 0]}]}
+    # example from {:in, [], [1,   {:^, [], [0, 0]}]}
     defp expr({:in, _, [_left, []]}, _sources, _query) do
       "0=1"
     end
@@ -802,7 +816,7 @@ if Code.ensure_loaded?(Tds) do
     end
 
     defp expr(%Decimal{exp: exp} = decimal, _sources, _query) do
-      # this should help gaining precision for decimals values embeded in query
+      # this should help gaining precision for decimals values embedded in query
       # but this is still not good enough, for instance:
       #
       # from(p in Post, select: type(2.0 + ^"2", p.cost())))
@@ -815,7 +829,7 @@ if Code.ensure_loaded?(Tds) do
       # FROM [posts] AS p0
       #
       # as long as we have CAST(... as DECIMAL) without precision and scale
-      # value could be trucated
+      # value could be truncated
       [
         "CAST(",
         Decimal.to_string(decimal, :normal),
@@ -1474,7 +1488,7 @@ if Code.ensure_loaded?(Tds) do
 
     defp quote_name(name) do
       if String.contains?(name, ["[", "]"]) do
-        error!(nil, "bad field name #{inspect(name)} '[' and ']' are not permited")
+        error!(nil, "bad field name #{inspect(name)} '[' and ']' are not permitted")
       end
 
       "[#{name}]"
@@ -1497,7 +1511,7 @@ if Code.ensure_loaded?(Tds) do
 
     defp quote_table(name) do
       if String.contains?(name, "[") or String.contains?(name, "]") do
-        error!(nil, "bad table name #{inspect(name)} '[' and ']' are not permited")
+        error!(nil, "bad table name #{inspect(name)} '[' and ']' are not permitted")
       end
 
       "[#{name}]"
@@ -1519,7 +1533,7 @@ if Code.ensure_loaded?(Tds) do
 
     defp unquoted_name(name) do
       if String.contains?(name, ["[", "]"]) do
-        error!(nil, "bad table name #{inspect(name)} '[' and ']' are not permited")
+        error!(nil, "bad table name #{inspect(name)} '[' and ']' are not permitted")
       end
 
       name
@@ -1599,14 +1613,11 @@ if Code.ensure_loaded?(Tds) do
       Atom.to_string(atom)
     end
 
-    defp ecto_to_db(str, nil, nil, nil, _)  when is_binary(str), do: str
-
     defp ecto_to_db(type, _, _, _, _) do
       raise ArgumentError,
             "unsupported type `#{inspect(type)}`. The type can either be an atom, a string " <>
               "or a tuple of the form `{:map, t}` where `t` itself follows the same conditions."
     end
-
 
     defp error!(nil, message) do
       raise ArgumentError, message

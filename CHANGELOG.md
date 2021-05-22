@@ -1,5 +1,40 @@
 # Changelog for v3.x
 
+## v3.6.1 (2021-04-12)
+
+### Bug fixes
+
+  * [migrations] Ensure migration_source option is respected in PostgreSQL adapter
+
+## v3.6.0 (2021-04-03)
+
+### Bug fixes
+
+  * [migrations] Fix a bug where the migration lock would not apply on the first migration (when the schema migrations table is empty). This fix changes how migration tables are locked, therefore let us know of any possible regressions in your workflow
+
+### Enhancements
+
+  * [migrations] Allow generating migrations from within umbrella app
+  * [psql] Add `:format` option to PostgreSQL explain
+  * [psql] Support `:socket_dir` connection option when using `mix ecto.load` or `mix ecto.dump`
+  * [sandbox] Support locally registered processes in `allow/3`
+  * [storage] Do not fail `storage_up` if the user has access to an already-created database
+  * [tds] Support for `:inner_lateral` and `:left_lateral`
+
+## v3.5.4 (2020-01-20)
+
+### Enhancements
+
+  * [mysql] Support defaults for JSON columns
+  * [psql] Allow Postgrex v1.0
+
+## v3.5.3 (2020-10-27)
+
+### Enhancements
+
+  * [migrations] Pass `:schema_migration` option to repo operations for `prepare_query` checks
+  * [psql] Support `:force_drop` configuration to force a DB to be dropped
+
 ## v3.5.2 (2020-10-24)
 
 ### Enhancements
@@ -117,7 +152,7 @@
 ### Enhancements
 
   * [ecto] Upgrade and support Ecto v3.3
-  * [repo] Include `:idle_time` on telemetry measuremnts
+  * [repo] Include `:idle_time` on telemetry measurements
   * [migration] Support anonymous functions in `Ecto.Migration.execute/2`
 
 ### Bug fixes
@@ -216,7 +251,7 @@ v3.1 requires Elixir v1.5+.
   * [sandbox] Respect `:ownership_timeout` repo configuration on SQL Sandbox
   * [migrations] Commit and relock after every migration to avoid leaving the DB in an inconsistent state under certain failures
 
-### Backwards incompatible changess
+### Backwards incompatible changes
 
   * [migrations] If you are creating indexes concurrently, you need to disable the migration lock: `config :app, App.Repo, migration_lock: nil`. This will migrations behave the same way as they did in Ecto 2.0.
 

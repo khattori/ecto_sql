@@ -1,5 +1,6 @@
 Ecto SQL
 =========
+
 [![Build Status](https://github.com/elixir-ecto/ecto_sql/workflows/CI/badge.svg)](https://github.com/elixir-ecto/ecto_sql/actions)
 
 Ecto SQL ([documentation](https://hexdocs.pm/ecto_sql)) provides building blocks for writing SQL adapters for Ecto. It features:
@@ -9,7 +10,7 @@ Ecto SQL ([documentation](https://hexdocs.pm/ecto_sql)) provides building blocks
   * A test sandbox (Ecto.Adapters.SQL.Sandbox) that concurrently runs database tests inside transactions
   * Support for database migrations via Mix tasks
 
-To learn more about getting started, [see the Ecto repository](https://github.com/elixir-ecto/ecto). 
+To learn more about getting started, [see the Ecto repository](https://github.com/elixir-ecto/ecto).
 
 ## Running tests
 
@@ -33,6 +34,24 @@ You can run tests against a specific Ecto adapter by using the `ECTO_ADAPTER` en
 MySQL and PostgreSQL can be installed directly on most systems. For MSSQL, you may need to run it as a Docker image:
 
     docker run -d -p 1433:1433 --name mssql -e 'ACCEPT_EULA=Y' -e 'MSSQL_SA_PASSWORD=some!Password' mcr.microsoft.com/mssql/server:2017-latest
+
+### Running containerized tests
+
+It is also possible to run the integration tests under a containerized environment using [earthly](https://earthly.dev/get-earthly):
+
+    $ earthly -P +all
+
+You can also use this to interactively debug any failing integration tests using the corresponding commands:
+
+    $ earthly -P -i --build-arg ELIXIR_BASE=1.8.2-erlang-20.3.8.26-alpine-3.11.6 --build-arg MYSQL=5.7 +integration-test-mysql
+    $ earthly -P -i --build-arg ELIXIR_BASE=1.8.2-erlang-20.3.8.26-alpine-3.11.6 --build-arg MSSQL=2019  +integration-test-mssql
+    $ earthly -P -i --build-arg ELIXIR_BASE=1.8.2-erlang-20.3.8.26-alpine-3.11.6 --build-arg POSTGRES=11.11 +integration-test-postgres
+
+Then once you enter the containerized shell, you can inspect the underlying databases with the respective commands:
+
+    PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d postgres ecto_test
+    MYSQL_PASSWORD=root mysql -h 127.0.0.1 -uroot -proot ecto_test
+    sqlcmd -U sa -P 'some!Password'
 
 ## License
 

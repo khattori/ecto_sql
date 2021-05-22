@@ -55,16 +55,18 @@ defmodule Ecto.Adapters.PostgresTest do
   defp delete_all(query), do: query |> SQL.delete_all |> IO.iodata_to_binary()
   defp execute_ddl(query), do: query |> SQL.execute_ddl |> Enum.map(&IO.iodata_to_binary/1)
 
-  defp insert(prefx, table, header, rows, on_conflict, returning) do
-    IO.iodata_to_binary SQL.insert(prefx, table, header, rows, on_conflict, returning)
+  defp insert(prefx, table, header, rows, on_conflict, returning, placeholders \\ []) do
+    IO.iodata_to_binary(
+      SQL.insert(prefx, table, header, rows, on_conflict, returning, placeholders)
+    )
   end
 
   defp update(prefx, table, fields, filter, returning) do
-    IO.iodata_to_binary SQL.update(prefx, table, fields, filter, returning)
+    IO.iodata_to_binary(SQL.update(prefx, table, fields, filter, returning))
   end
 
   defp delete(prefx, table, filter, returning) do
-    IO.iodata_to_binary SQL.delete(prefx, table, filter, returning)
+    IO.iodata_to_binary(SQL.delete(prefx, table, filter, returning))
   end
 
   test "from" do
@@ -307,6 +309,9 @@ defmodule Ecto.Adapters.PostgresTest do
     query = Schema |> order_by([r], [r.y]) |> distinct([r], desc: r.x) |> select([r], r.x) |> plan()
     assert all(query) == ~s{SELECT DISTINCT ON (s0."x") s0."x" FROM "schema" AS s0 ORDER BY s0."x" DESC, s0."y"}
 
+    query = Schema |> order_by([r], desc: r.x) |> distinct([r], desc: r.x) |> select([r], r.x) |> plan()
+    assert all(query) == ~s{SELECT DISTINCT ON (s0."x") s0."x" FROM "schema" AS s0 ORDER BY s0."x" DESC}
+
     query = Schema |> order_by([r], [r.y]) |> distinct([r], desc_nulls_last: r.x) |> select([r], r.x) |> plan()
     assert all(query) == ~s{SELECT DISTINCT ON (s0."x") s0."x" FROM "schema" AS s0 ORDER BY s0."x" DESC NULLS LAST, s0."y"}
   end
@@ -529,6 +534,9 @@ defmodule Ecto.Adapters.PostgresTest do
   end
 
   test "tagged type" do
+    query = Schema |> select([t], type(t.x + t.y, :integer)) |> plan()
+    assert all(query) == ~s{SELECT (s0."x" + s0."y")::bigint FROM "schema" AS s0}
+
     query = Schema |> select([], type(^"601d74e4-a8d3-4b6e-8365-eddb4c893327", Ecto.UUID)) |> plan()
     assert all(query) == ~s{SELECT $1::uuid FROM "schema" AS s0}
 
@@ -1095,6 +1103,9 @@ defmodule Ecto.Adapters.PostgresTest do
     query = insert(nil, "schema", [:x, :y], [[:x, :y], [nil, :z]], {:raise, [], []}, [:id])
     assert query == ~s{INSERT INTO "schema" ("x","y") VALUES ($1,$2),(DEFAULT,$3) RETURNING "id"}
 
+    query = insert(nil, "schema", [:x, :y], [[:x, :y], [nil, :z]], {:raise, [], []}, [:id], [1, 2])
+    assert query == ~s{INSERT INTO "schema" ("x","y") VALUES ($3,$4),(DEFAULT,$5) RETURNING "id"}
+
     query = insert(nil, "schema", [], [[]], {:raise, [], []}, [:id])
     assert query == ~s{INSERT INTO "schema" VALUES (DEFAULT) RETURNING "id"}
 
@@ -1137,6 +1148,13 @@ defmodule Ecto.Adapters.PostgresTest do
     query = insert(nil, "schema", [:x, :y, :z], [[:x, {query, 3}, :z], [nil, {query, 2}, :z]], {:raise, [], []}, [:id])
 
     assert query == ~s{INSERT INTO "schema" ("x","y","z") VALUES ($1,(SELECT s0."id" FROM "schema" AS s0),$5),(DEFAULT,(SELECT s0."id" FROM "schema" AS s0),$8) RETURNING "id"}
+  end
+
+  test "insert with query as rows" do
+    query = from(s in "schema", select: %{ foo: fragment("3"), bar: s.bar }) |> plan(:all)
+    query = insert(nil, "schema", [:foo, :bar], query, {:raise, [], []}, [:foo])
+
+    assert query == ~s{INSERT INTO "schema" ("foo","bar") (SELECT 3, s0."bar" FROM "schema" AS s0) RETURNING "foo"}
   end
 
   test "update" do
@@ -1182,7 +1200,7 @@ defmodule Ecto.Adapters.PostgresTest do
               [{:add, :name, :string, [default: "Untitled", size: 20, null: false]},
                {:add, :price, :numeric, [precision: 8, scale: 2, default: {:fragment, "expr"}]},
                {:add, :on_hand, :integer, [default: 0, null: true]},
-               {:add, :published_at, "time without time zone", [null: true]},
+               {:add, :published_at, :"time without time zone", [null: true]},
                {:add, :is_active, :boolean, [default: true]},
                {:add, :tags, {:array, :string}, [default: []]},
                {:add, :languages, {:array, :string}, [default: ["pt", "es"]]},

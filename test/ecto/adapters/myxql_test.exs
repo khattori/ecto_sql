@@ -54,7 +54,7 @@ defmodule Ecto.Adapters.MyXQLTest do
   defp execute_ddl(query), do: query |> SQL.execute_ddl |> Enum.map(&IO.iodata_to_binary/1)
 
   defp insert(prefx, table, header, rows, on_conflict, returning) do
-    IO.iodata_to_binary SQL.insert(prefx, table, header, rows, on_conflict, returning)
+    IO.iodata_to_binary SQL.insert(prefx, table, header, rows, on_conflict, returning, [])
   end
 
   defp update(prefx, table, fields, filter, returning) do
@@ -974,6 +974,13 @@ defmodule Ecto.Adapters.MyXQLTest do
     assert query == ~s{INSERT INTO `schema` (`x`,`y`,`z`) VALUES (?,(SELECT s0.`id` FROM `schema` AS s0),?),(DEFAULT,DEFAULT,(SELECT s0.`id` FROM `schema` AS s0))}
   end
 
+  test "insert with query as rows" do
+    query = from(s in "schema", select: %{ foo: fragment("3"), bar: s.bar }) |> plan(:all)
+    query = insert(nil, "schema", [:foo, :bar], query, {:raise, [], []}, [])
+
+    assert query == ~s{INSERT INTO `schema` (`foo`,`bar`) (SELECT 3, s0.`bar` FROM `schema` AS s0)}
+  end
+
   test "update" do
     query = update(nil, "schema", [:id], [x: 1, y: 2], [])
     assert query == ~s{UPDATE `schema` SET `id` = ? WHERE `x` = ? AND `y` = ?}
@@ -1011,8 +1018,8 @@ defmodule Ecto.Adapters.MyXQLTest do
                 {:add, :token, :binary, [size: 20, null: false]},
                 {:add, :price, :numeric, [precision: 8, scale: 2, default: {:fragment, "expr"}]},
                 {:add, :on_hand, :integer, [default: 0, null: true]},
-                {:add, :likes, "smallint unsigned", [default: 0, null: false]},
-                {:add, :published_at, "datetime(6)", [null: true]},
+                {:add, :likes, :"smallint unsigned", [default: 0, null: false]},
+                {:add, :published_at, :"datetime(6)", [null: true]},
                 {:add, :is_active, :boolean, [default: true]}]}
 
     assert execute_ddl(create) == ["""

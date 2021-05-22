@@ -15,7 +15,7 @@ defmodule Ecto.Adapters.Tds do
     * `:username` - Username
     * `:password` - User password
     * `:database` - the database to connect to
-    * `:pool` - The connection pool module, defaults to `DBConnection.ConnectionPool`
+    * `:pool` - The connection pool module, may be set to `Ecto.Adapters.SQL.Sandbox`
     * `:ssl` - Set to true if ssl should be used (default: false)
     * `:ssl_opts` - A list of ssl options, see Erlang's `ssl` docs
     * `:show_sensitive_data_on_connection_error` - show connection data and
@@ -35,7 +35,7 @@ defmodule Ecto.Adapters.Tds do
 
       config :tds, :text_encoder, Tds.Encoding
 
-  This should give you extended set of most encoding. For cemplete list check
+  This should give you extended set of most encoding. For complete list check
   `Tds.Encoding` [documentation](https://hexdocs.pm/tds_encoding).
 
   ### After connect flags
@@ -60,13 +60,13 @@ defmodule Ecto.Adapters.Tds do
 
   ### UUIDs
 
-  MSSQL server has slighlty different binary storage format for UUIDs (`uniqueidenitifer`).
+  MSSQL server has slightly different binary storage format for UUIDs (`uniqueidentifier`).
   If you use `:binary_id`, the proper choice is made. Otherwise you must use the `Tds.Ecto.UUID`
   type. Avoid using `Ecto.UUID` since it may cause unpredictable application behaviour.
 
   ### SQL `Char`, `VarChar` and `Text` types
 
-  When working with binaries and strings,there are some limitions you should be aware of:
+  When working with binaries and strings,there are some limitations you should be aware of:
 
     - Strings that should be stored in mentioned sql types must be encoded to column
       codepage (defined in collation). If collation is different than database collation,
@@ -75,9 +75,9 @@ defmodule Ecto.Adapters.Tds do
       codepage.
 
     - If you need other than Latin1 or other than your database default collation, as
-      mentioned in "Storage Options" section, then manualy encode strings using
+      mentioned in "Storage Options" section, then manually encode strings using
       `Tds.Encoding.encode/2` into desired codepage and then tag parameter as `:binary`.
-      Please be aware that queries that use this approach in where calues can be 10x slower
+      Please be aware that queries that use this approach in where clauses can be 10x slower
       due increased logical reads in database.
 
     - You can't store VarChar codepoints encoded in one collation/codepage to column that
@@ -116,17 +116,17 @@ defmodule Ecto.Adapters.Tds do
 
   To avoid deadlocks in your app, we exposed `:isolation_level`  repo transaction option.
   This will tell to SQL Server Transaction Manager how to begin transaction.
-  By default, if this option is ommited, isolation level is set to `:read_committed`.
+  By default, if this option is omitted, isolation level is set to `:read_committed`.
 
-  Any attempt to manualy set the transaction isolation via queries, such as
+  Any attempt to manually set the transaction isolation via queries, such as
 
       Ecto.Adapter.SQL.query("SET TRANSACTION ISOLATION LEVEL XYZ")
 
   will fail once explicit transaction is started using `c:Ecto.Repo.transaction/2`
-  and reset back to :read_commited.
+  and reset back to :read_committed.
 
   There is `Ecto.Query.lock/3` function can help by setting it to `WITH(NOLOCK)`.
-  This should allow you to do eventualy consistent reads and avoid locks on given
+  This should allow you to do eventually consistent reads and avoid locks on given
   table if you don't need to write to database.
 
   NOTE: after explicit transaction ends (commit or rollback) implicit transactions
@@ -215,7 +215,7 @@ defmodule Ecto.Adapters.Tds do
   @impl Ecto.Adapter.Storage
   def storage_status(opts) do
     database =
-      Keyword.fetch!(opts, :database) || raise ":database is nil in repostory configuration"
+      Keyword.fetch!(opts, :database) || raise ":database is nil in repository configuration"
 
     opts = Keyword.put(opts, :database, "master")
 
@@ -280,23 +280,19 @@ defmodule Ecto.Adapters.Tds do
   def lock_for_migrations(meta, opts, fun) do
     %{opts: adapter_opts, repo: repo} = meta
 
-    if Keyword.get(adapter_opts, :migration_lock, true) do
-      if Keyword.fetch(adapter_opts, :pool_size) == {:ok, 1} do
-        Ecto.Adapters.SQL.raise_migration_pool_size_error()
-      end
-
-      opts = opts ++ [log: false, timeout: :infinity]
-
-      {:ok, result} =
-        transaction(meta, opts, fn ->
-          lock_name = "'ecto_#{inspect(repo)}'"
-          Ecto.Adapters.SQL.query!(meta, "sp_getapplock @Resource = #{lock_name}, @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = -1", [], opts)
-          fun.()
-        end)
-
-      result
-    else
-      fun.()
+    if Keyword.fetch(adapter_opts, :pool_size) == {:ok, 1} do
+      Ecto.Adapters.SQL.raise_migration_pool_size_error()
     end
+
+    opts = opts ++ [log: false, timeout: :infinity]
+
+    {:ok, result} =
+      transaction(meta, opts, fn ->
+        lock_name = "'ecto_#{inspect(repo)}'"
+        Ecto.Adapters.SQL.query!(meta, "sp_getapplock @Resource = #{lock_name}, @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = -1", [], opts)
+        fun.()
+      end)
+
+    result
   end
 end

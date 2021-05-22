@@ -140,13 +140,16 @@ if Code.ensure_loaded?(MyXQL) do
     end
 
     @impl true
-    def insert(prefix, table, header, rows, on_conflict, []) do
+    def insert(prefix, table, header, rows, on_conflict, [], []) do
       fields = quote_names(header)
-      ["INSERT INTO ", quote_table(prefix, table), " (", fields, ") VALUES ",
+      ["INSERT INTO ", quote_table(prefix, table), " (", fields, ") ",
        insert_all(rows) | on_conflict(on_conflict, header)]
     end
-    def insert(_prefix, _table, _header, _rows, _on_conflict, _returning) do
+    def insert(_prefix, _table, _header, _rows, _on_conflict, _returning, []) do
       error!(nil, ":returning is not supported in insert/insert_all by MySQL")
+    end
+    def insert(_prefix, _table, _header, _rows, _on_conflict, _returning, _placeholders) do
+      error!(nil, ":placeholders is not supported by MySQL")
     end
 
     defp on_conflict({_, _, [_ | _]}, _header) do
@@ -173,10 +176,14 @@ if Code.ensure_loaded?(MyXQL) do
       error!(nil, "Using a query with :where in combination with the :on_conflict option is not supported by MySQL")
     end
 
-    defp insert_all(rows) do
-      intersperse_map(rows, ?,, fn row ->
+    defp insert_all(rows) when is_list(rows) do
+      ["VALUES ", intersperse_map(rows, ?,, fn row ->
         [?(, intersperse_map(row, ?,, &insert_all_value/1), ?)]
-      end)
+      end)]
+    end
+
+    defp insert_all(%Ecto.Query{} = query) do
+      [?(, all(query), ?)]
     end
 
     defp insert_all_value(nil), do: "DEFAULT"
@@ -456,7 +463,7 @@ if Code.ensure_loaded?(MyXQL) do
     defp operator_to_boolean(:or), do: " OR "
 
     defp parens_for_select([first_expr | _] = expr) do
-      if is_binary(first_expr) and String.starts_with?(first_expr, ["SELECT", "select"]) do
+      if is_binary(first_expr) and String.match?(first_expr, ~r/^\s*select/i) do
         [?(, expr, ?)]
       else
         expr
@@ -1062,7 +1069,6 @@ if Code.ensure_loaded?(MyXQL) do
     defp ecto_to_db(:naive_datetime, _query),      do: "datetime"
     defp ecto_to_db(:naive_datetime_usec, _query), do: "datetime"
     defp ecto_to_db(atom, _query) when is_atom(atom),  do: Atom.to_string(atom)
-    defp ecto_to_db(str, _query)  when is_binary(str), do: str
     defp ecto_to_db(type, _query) do
       raise ArgumentError,
             "unsupported type `#{inspect(type)}`. The type can either be an atom, a string " <>

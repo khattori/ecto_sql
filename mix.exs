@@ -1,7 +1,8 @@
 defmodule EctoSQL.MixProject do
   use Mix.Project
 
-  @version "3.6.0-dev"
+  @source_url "https://github.com/elixir-ecto/ecto_sql"
+  @version "3.6.1"
   @adapters ~w(pg myxql tds)
 
   def project do
@@ -76,7 +77,7 @@ defmodule EctoSQL.MixProject do
     if path = System.get_env("ECTO_PATH") do
       {:ecto, path: path}
     else
-      {:ecto, "~> 3.5.0"}
+      {:ecto, "~> 3.6.0", github: "elixir-ecto/ecto"}
     end
   end
 
@@ -84,7 +85,7 @@ defmodule EctoSQL.MixProject do
     if path = System.get_env("POSTGREX_PATH") do
       {:postgrex, path: path}
     else
-      {:postgrex, "~> 0.15.0", optional: true}
+      {:postgrex, "~> 0.15.0 or ~> 1.0", optional: true}
     end
   end
 
@@ -92,7 +93,7 @@ defmodule EctoSQL.MixProject do
     if path = System.get_env("MYXQL_PATH") do
       {:myxql, path: path}
     else
-      {:myxql, "~> 0.3.0 or ~> 0.4.0", optional: true}
+      {:myxql, "~> 0.4.0 or ~> 0.5.0", optional: true}
     end
   end
 
@@ -112,7 +113,7 @@ defmodule EctoSQL.MixProject do
     [
       maintainers: ["Eric Meadows-Jönsson", "José Valim", "James Fish", "Michał Muskała"],
       licenses: ["Apache-2.0"],
-      links: %{"GitHub" => "https://github.com/elixir-ecto/ecto_sql"},
+      links: %{"GitHub" => @source_url},
       files:
         ~w(.formatter.exs mix.exs README.md CHANGELOG.md lib) ++
           ~w(integration_test/sql integration_test/support)
@@ -173,7 +174,9 @@ defmodule EctoSQL.MixProject do
       main: "Ecto.Adapters.SQL",
       source_ref: "v#{@version}",
       canonical: "http://hexdocs.pm/ecto_sql",
-      source_url: "https://github.com/elixir-ecto/ecto_sql",
+      source_url: @source_url,
+      extras: ["CHANGELOG.md"],
+      skip_undefined_reference_warnings_on: ["CHANGELOG.md"],
       groups_for_modules: [
         # Ecto.Adapters.SQL,
         # Ecto.Adapters.SQL.Sandbox,

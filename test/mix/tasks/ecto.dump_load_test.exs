@@ -13,6 +13,7 @@ defmodule Mix.Tasks.Ecto.DumpLoadTest do
     def dumpers(_, _), do: raise "not implemented"
     def loaders(_, _), do: raise "not implemented"
     def checkout(_, _, _), do: raise "not implemented"
+    def checked_out?(_), do: raise "not implemented"
     def ensure_all_started(_, _), do: {:ok, []}
 
     def init(_opts) do
@@ -31,6 +32,7 @@ defmodule Mix.Tasks.Ecto.DumpLoadTest do
     def loaders(_, _), do: raise "not implemented"
     def init(_), do: raise "not implemented"
     def checkout(_, _, _), do: raise "not implemented"
+    def checked_out?(_), do: raise "not implemented"
     def ensure_all_started(_, _), do: raise "not implemented"
   end
 

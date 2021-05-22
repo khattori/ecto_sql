@@ -36,7 +36,7 @@ defmodule Ecto.Adapters.Postgres do
     * `:database` - the database to connect to
     * `:maintenance_database` - Specifies the name of the database to connect to when
       creating or dropping the database. Defaults to `"postgres"`
-    * `:pool` - The connection pool module, defaults to `DBConnection.ConnectionPool`
+    * `:pool` - The connection pool module, may be set to `Ecto.Adapters.SQL.Sandbox`
     * `:ssl` - Set to true if ssl should be used (default: false)
     * `:ssl_opts` - A list of ssl options, see Erlang's `ssl` docs
     * `:parameters` - Keyword list of connection parameters
@@ -127,25 +127,37 @@ defmodule Ecto.Adapters.Postgres do
 
   @impl true
   def storage_up(opts) do
-    database = Keyword.fetch!(opts, :database) || raise ":database is nil in repository configuration"
+    database =
+      Keyword.fetch!(opts, :database) || raise ":database is nil in repository configuration"
+
     encoding = if opts[:encoding] == :unspecified, do: nil, else: opts[:encoding] || "UTF8"
     maintenance_database = Keyword.get(opts, :maintenance_database, @default_maintenance_database)
     opts = Keyword.put(opts, :database, maintenance_database)
 
-    command =
-      ~s(CREATE DATABASE "#{database}")
-      |> concat_if(encoding, &"ENCODING '#{&1}'")
-      |> concat_if(opts[:template], &"TEMPLATE=#{&1}")
-      |> concat_if(opts[:lc_ctype], &"LC_CTYPE='#{&1}'")
-      |> concat_if(opts[:lc_collate], &"LC_COLLATE='#{&1}'")
+    check_existence_command = "SELECT FROM pg_database WHERE datname = '#{database}'"
 
-    case run_query(command, opts) do
-      {:ok, _} ->
-        :ok
-      {:error, %{postgres: %{code: :duplicate_database}}} ->
+    case run_query(check_existence_command, opts) do
+      {:ok, %{num_rows: 1}} ->
         {:error, :already_up}
-      {:error, error} ->
-        {:error, Exception.message(error)}
+
+      _ ->
+        create_command =
+          ~s(CREATE DATABASE "#{database}")
+          |> concat_if(encoding, &"ENCODING '#{&1}'")
+          |> concat_if(opts[:template], &"TEMPLATE=#{&1}")
+          |> concat_if(opts[:lc_ctype], &"LC_CTYPE='#{&1}'")
+          |> concat_if(opts[:lc_collate], &"LC_COLLATE='#{&1}'")
+
+        case run_query(create_command, opts) do
+          {:ok, _} ->
+            :ok
+
+          {:error, %{postgres: %{code: :duplicate_database}}} ->
+            {:error, :already_up}
+
+          {:error, error} ->
+            {:error, Exception.message(error)}
+        end
     end
   end
 
@@ -195,27 +207,23 @@ defmodule Ecto.Adapters.Postgres do
   def lock_for_migrations(meta, opts, fun) do
     %{opts: adapter_opts} = meta
 
-    if Keyword.get(adapter_opts, :migration_lock, true) do
-      if Keyword.fetch(adapter_opts, :pool_size) == {:ok, 1} do
-        Ecto.Adapters.SQL.raise_migration_pool_size_error()
-      end
-
-      opts = opts ++ [log: false, timeout: :infinity]
-
-      {:ok, result} =
-        transaction(meta, opts, fn ->
-          # SHARE UPDATE EXCLUSIVE MODE is the first lock that locks
-          # itself but still allows updates to happen, see
-          # # https://www.postgresql.org/docs/9.4/explicit-locking.html
-          source = Keyword.get(adapter_opts, :migration_source, "schema_migrations")
-          {:ok, _} = Ecto.Adapters.SQL.query(meta, "LOCK TABLE \"#{source}\" IN SHARE UPDATE EXCLUSIVE MODE", [], opts)
-          fun.()
-        end)
-
-      result
-    else
-      fun.()
+    if Keyword.fetch(adapter_opts, :pool_size) == {:ok, 1} do
+      Ecto.Adapters.SQL.raise_migration_pool_size_error()
     end
+
+    opts = opts ++ [log: false, timeout: :infinity]
+
+    {:ok, result} =
+      transaction(meta, opts, fn ->
+        # SHARE UPDATE EXCLUSIVE MODE is the first lock that locks
+        # itself but still allows updates to happen, see
+        # # https://www.postgresql.org/docs/9.4/explicit-locking.html
+        source = Keyword.get(opts, :migration_source, "schema_migrations")
+        {:ok, _} = Ecto.Adapters.SQL.query(meta, "LOCK TABLE \"#{source}\" IN SHARE UPDATE EXCLUSIVE MODE", [], opts)
+        fun.()
+      end)
+
+    result
   end
 
   @impl true
@@ -331,7 +339,15 @@ defmodule Ecto.Adapters.Postgres do
     args =
       if port = opts[:port], do: ["-p", to_string(port)|args], else: args
 
-    host = opts[:hostname] || System.get_env("PGHOST") || "localhost"
+    host = opts[:socket_dir] || opts[:hostname] || System.get_env("PGHOST") || "localhost"
+
+    if opts[:socket] do
+      IO.warn(
+        ":socket option is ignored when connecting in structure_load/2 and structure_dump/2," <>
+          " use :socket_dir or :hostname instead"
+      )
+    end
+
     args = ["--host", host|args]
     args = args ++ opt_args
     System.cmd(cmd, args, env: env, stderr_to_stdout: true)

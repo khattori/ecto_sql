@@ -20,7 +20,7 @@ defmodule Ecto.Adapters.MyXQL do
     * `:username` - Username
     * `:password` - User password
     * `:database` - the database to connect to
-    * `:pool` - The connection pool module, defaults to `DBConnection.ConnectionPool`
+    * `:pool` - The connection pool module, may be set to `Ecto.Adapters.SQL.Sandbox`
     * `:ssl` - Set to true if ssl should be used (default: false)
     * `:ssl_opts` - A list of ssl options, see Erlang's `ssl` docs
     * `:connect_timeout` - The timeout for establishing new connections (default: 5000)
@@ -159,19 +159,25 @@ defmodule Ecto.Adapters.MyXQL do
     opts = Keyword.delete(opts, :database)
     charset = opts[:charset] || "utf8mb4"
 
-    command =
-      ~s(CREATE DATABASE `#{database}` DEFAULT CHARACTER SET = #{charset})
-      |> concat_if(opts[:collation], &"DEFAULT COLLATE = #{&1}")
-
-    case run_query(command, opts) do
-      {:ok, _} ->
-        :ok
-      {:error, %{mysql: %{name: :ER_DB_CREATE_EXISTS}}} ->
+    check_existence_command = "SELECT TRUE FROM information_schema.schemata WHERE schema_name = '#{database}'"
+    case run_query(check_existence_command, opts) do
+      {:ok, %{num_rows: 1}} ->
         {:error, :already_up}
-      {:error, error} ->
-        {:error, Exception.message(error)}
-      {:exit, exit} ->
-        {:error, exit_to_exception(exit)}
+      _ ->
+        create_command =
+          ~s(CREATE DATABASE `#{database}` DEFAULT CHARACTER SET = #{charset})
+          |> concat_if(opts[:collation], &"DEFAULT COLLATE = #{&1}")
+
+        case run_query(create_command, opts) do
+          {:ok, _} ->
+            :ok
+          {:error, %{mysql: %{name: :ER_DB_CREATE_EXISTS}}} ->
+            {:error, :already_up}
+          {:error, error} ->
+            {:error, Exception.message(error)}
+          {:exit, exit} ->
+            {:error, exit_to_exception(exit)}
+        end
     end
   end
 
@@ -221,29 +227,25 @@ defmodule Ecto.Adapters.MyXQL do
   def lock_for_migrations(meta, opts, fun) do
     %{opts: adapter_opts, repo: repo} = meta
 
-    if Keyword.get(adapter_opts, :migration_lock, true) do
-      if Keyword.fetch(adapter_opts, :pool_size) == {:ok, 1} do
-        Ecto.Adapters.SQL.raise_migration_pool_size_error()
-      end
-
-      opts = opts ++ [log: false, timeout: :infinity]
-
-      {:ok, result} =
-        transaction(meta, opts, fn ->
-          lock_name = "\"ecto_#{inspect(repo)}\""
-
-          try do
-            {:ok, _} = Ecto.Adapters.SQL.query(meta, "SELECT GET_LOCK(#{lock_name}, -1)", [], opts)
-            fun.()
-          after
-            {:ok, _} = Ecto.Adapters.SQL.query(meta, "SELECT RELEASE_LOCK(#{lock_name})", [], opts)
-          end
-        end)
-
-      result
-    else
-      fun.()
+    if Keyword.fetch(adapter_opts, :pool_size) == {:ok, 1} do
+      Ecto.Adapters.SQL.raise_migration_pool_size_error()
     end
+
+    opts = opts ++ [log: false, timeout: :infinity]
+
+    {:ok, result} =
+      transaction(meta, opts, fn ->
+        lock_name = "\"ecto_#{inspect(repo)}\""
+
+        try do
+          {:ok, _} = Ecto.Adapters.SQL.query(meta, "SELECT GET_LOCK(#{lock_name}, -1)", [], opts)
+          fun.()
+        after
+          {:ok, _} = Ecto.Adapters.SQL.query(meta, "SELECT RELEASE_LOCK(#{lock_name})", [], opts)
+        end
+      end)
+
+    result
   end
 
   @impl true
@@ -253,7 +255,7 @@ defmodule Ecto.Adapters.MyXQL do
 
     key = primary_key!(schema_meta, returning)
     {fields, values} = :lists.unzip(params)
-    sql = @conn.insert(prefix, source, fields, [fields], on_conflict, [])
+    sql = @conn.insert(prefix, source, fields, [fields], on_conflict, [], [])
     opts = [{:cache_statement, "ecto_insert_#{source}"} | opts]
 
     case Ecto.Adapters.SQL.query(adapter_meta, sql, values ++ query_params, opts) do

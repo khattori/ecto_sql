@@ -59,8 +59,10 @@ defmodule Ecto.Adapters.TdsTest do
   defp delete_all(query), do: query |> SQL.delete_all() |> IO.iodata_to_binary()
   defp execute_ddl(query), do: query |> SQL.execute_ddl() |> Enum.map(&IO.iodata_to_binary/1)
 
-  defp insert(prefx, table, header, rows, on_conflict, returning) do
-    IO.iodata_to_binary(SQL.insert(prefx, table, header, rows, on_conflict, returning))
+  defp insert(prefx, table, header, rows, on_conflict, returning, placeholders \\ []) do
+    IO.iodata_to_binary(
+      SQL.insert(prefx, table, header, rows, on_conflict, returning, placeholders)
+    )
   end
 
   defp update(prefx, table, fields, filter, returning) do
@@ -914,7 +916,7 @@ defmodule Ecto.Adapters.TdsTest do
              ~s{SELECT CAST(1 as bit) FROM [prefix].[schema] AS s0 INNER JOIN [prefix].[schema2] AS s1 ON s0.[x] = s1.[z]}
   end
 
-  test "join with fragment" do
+  test "join with single line fragment" do
     query =
       Schema
       |> join(
@@ -930,6 +932,54 @@ defmodule Ecto.Adapters.TdsTest do
              ~s{SELECT s0.[id], @1 FROM [schema] AS s0 INNER JOIN } <>
                ~s{(SELECT * FROM schema2 AS s2 WHERE s2.id = s0.[x] AND s2.field = @2) AS f1 ON 1 = 1 } <>
                ~s{WHERE ((s0.[id] > 0) AND (s0.[id] < @3))}
+  end
+
+  test "join with multi-line fragment" do
+    query =
+      Schema
+      |> join(
+        :inner,
+        [p],
+        q in fragment(~S"""
+          SELECT *
+          FROM schema2 AS s2
+          WHERE s2.id = ? AND s2.field = ?
+        """, p.x, ^10)
+      )
+      |> select([p], {p.id, ^0})
+      |> where([p], p.id > 0 and p.id < ^100)
+      |> plan()
+
+    assert all(query) ==
+             ~s{SELECT s0.[id], @1 FROM [schema] AS s0 INNER JOIN } <>
+               ~s{(  SELECT *\n } <>
+               ~s{ FROM schema2 AS s2\n } <>
+               ~s{ WHERE s2.id = s0.[x] AND s2.field = @2\n} <>
+               ~s{) AS f1 ON 1 = 1 WHERE ((s0.[id] > 0) AND (s0.[id] < @3))}
+  end
+
+  test "inner lateral join with fragment" do
+    query = Schema
+            |> join(:inner_lateral, [p], q in fragment("SELECT * FROM schema2 AS s2 WHERE s2.id = ? AND s2.field = ?", p.x, ^10))
+            |> select([p, q], {p.id, q.z})
+            |> where([p], p.id > 0 and p.id < ^100)
+            |> plan()
+    assert all(query) ==
+           ~s{SELECT s0.[id], f1.[z] FROM [schema] AS s0 CROSS APPLY } <>
+           ~s{(SELECT * FROM schema2 AS s2 WHERE s2.id = s0.[x] AND s2.field = @1) AS f1 } <>
+           ~s{WHERE ((s0.[id] > 0) AND (s0.[id] < @2))}
+  end
+
+  test "left lateral join with fragment" do
+    query = Schema
+            |> join(:left_lateral, [p], q in fragment("SELECT * FROM schema2 AS s2 WHERE s2.id = ? AND s2.field = ?", p.x, ^10))
+            |> select([p, q], {p.id, q.z})
+            |> where([p], p.id > 0 and p.id < ^100)
+            |> plan()
+    assert all(query) ==
+           ~s{SELECT s0.[id], f1.[z] FROM [schema] AS s0 OUTER APPLY } <>
+           ~s{(SELECT * FROM schema2 AS s2 WHERE s2.id = s0.[x] AND s2.field = @1) AS f1 } <>
+           ~s{WHERE ((s0.[id] > 0) AND (s0.[id] < @2))}
   end
 
   test "join with fragment and on defined" do
@@ -986,20 +1036,21 @@ defmodule Ecto.Adapters.TdsTest do
   # Schema based
 
   test "insert" do
-    # prefx, table, header, rows, on_conflict, returning
-    query = insert(nil, "schema", [:x, :y], [[:x, :y]], {:raise, [], []}, [])
-    assert query == ~s{INSERT INTO [schema] ([x],[y]) VALUES (@1, @2)}
+    # prefx, table, header, rows, on_conflict, returning, placeholders
+    assert insert(nil, "schema", [:x, :y], [[:x, :y]], {:raise, [], []}, []) ==
+             ~s{INSERT INTO [schema] ([x],[y]) VALUES (@1, @2)}
 
-    query = insert(nil, "schema", [:x, :y], [[:x, :y], [nil, :y]], {:raise, [], []}, [:id])
-
-    assert query ==
+    assert insert(nil, "schema", [:x, :y], [[:x, :y], [nil, :y]], {:raise, [], []}, [:id]) ==
              ~s{INSERT INTO [schema] ([x],[y]) OUTPUT INSERTED.[id] VALUES (@1, @2),(DEFAULT, @3)}
 
-    query = insert(nil, "schema", [], [[]], {:raise, [], []}, [:id])
-    assert query == ~s{INSERT INTO [schema] OUTPUT INSERTED.[id] DEFAULT VALUES}
+    assert insert(nil, "schema", [:x, :y], [[:x, :y], [nil, :y]], {:raise, [], []}, [:id], [1, 2]) ==
+             ~s{INSERT INTO [schema] ([x],[y]) OUTPUT INSERTED.[id] VALUES (@3, @4),(DEFAULT, @5)}
 
-    query = insert("prefix", "schema", [], [[]], {:raise, [], []}, [:id])
-    assert query == ~s{INSERT INTO [prefix].[schema] OUTPUT INSERTED.[id] DEFAULT VALUES}
+    assert insert(nil, "schema", [], [[]], {:raise, [], []}, [:id]) ==
+             ~s{INSERT INTO [schema] OUTPUT INSERTED.[id] DEFAULT VALUES}
+
+    assert insert("prefix", "schema", [], [[]], {:raise, [], []}, [:id]) ==
+             ~s{INSERT INTO [prefix].[schema] OUTPUT INSERTED.[id] DEFAULT VALUES}
   end
 
   test "insert with query" do
@@ -1017,6 +1068,13 @@ defmodule Ecto.Adapters.TdsTest do
 
     assert query ==
              ~s{INSERT INTO [schema] ([x],[y],[z]) VALUES (@1, (SELECT s0.[id] FROM [schema] AS s0), @4),(DEFAULT, DEFAULT, (SELECT s0.[id] FROM [schema] AS s0))}
+  end
+
+  test "insert with query as rows" do
+    query = from(s in "schema", select: %{ foo: fragment("3"), bar: s.bar }) |> plan(:all)
+    query = insert(nil, "schema", [:foo, :bar], query, {:raise, [], []}, [:foo])
+
+    assert query == ~s{INSERT INTO [schema] ([foo],[bar]) OUTPUT INSERTED.[foo] SELECT 3, s0.[bar] FROM [schema] AS s0}
   end
 
   test "update" do
@@ -1063,8 +1121,8 @@ defmodule Ecto.Adapters.TdsTest do
          {:add, :name, :string, [default: "Untitled", size: 20, null: false]},
          {:add, :price, :numeric, [precision: 8, scale: 2, default: {:fragment, "expr"}]},
          {:add, :on_hand, :integer, [default: 0, null: true]},
-         {:add, :likes, "smallint unsigned", [default: 0, null: false]},
-         {:add, :published_at, "datetime(6)", [null: true]},
+         {:add, :likes, :"smallint unsigned", [default: 0, null: false]},
+         {:add, :published_at, :"datetime(6)", [null: true]},
          {:add, :is_active, :boolean, [default: true]}
        ]}
 

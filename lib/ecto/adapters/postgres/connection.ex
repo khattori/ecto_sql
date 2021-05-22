@@ -152,12 +152,13 @@ if Code.ensure_loaded?(Postgrex) do
     end
 
     @impl true
-    def insert(prefix, table, header, rows, on_conflict, returning) do
+    def insert(prefix, table, header, rows, on_conflict, returning, placeholders) do
+      counter_offset = length(placeholders) + 1
       values =
         if header == [] do
           [" VALUES " | intersperse_map(rows, ?,, fn _ -> "(DEFAULT)" end)]
         else
-          [?\s, ?(, quote_names(header), ") VALUES " | insert_all(rows, 1)]
+          [" (", quote_names(header), ") " | insert_all(rows, counter_offset)]
         end
 
       ["INSERT INTO ", quote_table(prefix, table), insert_as(on_conflict),
@@ -198,12 +199,16 @@ if Code.ensure_loaded?(Postgrex) do
        end)]
     end
 
+    defp insert_all(query = %Ecto.Query{}, _counter) do
+      [?(, all(query), ?)]
+    end
+
     defp insert_all(rows, counter) do
-      intersperse_reduce(rows, ?,, counter, fn row, counter ->
+      ["VALUES ", intersperse_reduce(rows, ?,, counter, fn row, counter ->
         {row, counter} = insert_each(row, counter)
         {[?(, row, ?)], counter}
       end)
-      |> elem(0)
+      |> elem(0)]
     end
 
     defp insert_each(values, counter) do
@@ -213,6 +218,9 @@ if Code.ensure_loaded?(Postgrex) do
 
         {%Ecto.Query{} = query, params_counter}, counter ->
           {[?(, all(query), ?)], counter + params_counter}
+
+        {:placeholder, placeholder_index}, counter ->
+          {[?$ | placeholder_index], counter}
 
         _, counter ->
           {[?$ | Integer.to_string(counter)], counter + 1}
@@ -253,10 +261,15 @@ if Code.ensure_loaded?(Postgrex) do
     @impl true
     def explain_query(conn, query, params, opts) do
       {explain_opts, opts} =
-        Keyword.split(opts, ~w[analyze verbose costs settings buffers timing summary]a)
+        Keyword.split(opts, ~w[analyze verbose costs settings buffers timing summary format]a)
+
+      map_format? = {:format, :map} in explain_opts
 
       case query(conn, build_explain_query(query, explain_opts), params, opts) do
-        {:ok, %Postgrex.Result{rows: rows}} -> {:ok, Enum.map_join(rows, "\n", & &1)}
+        {:ok, %Postgrex.Result{rows: rows}} when map_format? ->
+          {:ok, List.flatten(rows)}
+        {:ok, %Postgrex.Result{rows: rows}} ->
+          {:ok, Enum.map_join(rows, "\n", & &1)}
         error -> error
       end
     end
@@ -288,6 +301,9 @@ if Code.ensure_loaded?(Postgrex) do
             |> Enum.reduce([], fn
               {_, nil}, acc ->
                 acc
+
+              {:format, value}, acc ->
+                [String.upcase("#{format_to_sql(value)}") | acc]
 
               {opt, value}, acc ->
                 [String.upcase("#{opt} #{quote_boolean(value)}") | acc]
@@ -489,9 +505,12 @@ if Code.ensure_loaded?(Postgrex) do
     defp order_by(%{order_bys: []}, _distinct, _sources), do: []
     defp order_by(%{order_bys: order_bys} = query, distinct, sources) do
       order_bys = Enum.flat_map(order_bys, & &1.expr)
-      [" ORDER BY " |
-       intersperse_map(distinct ++ order_bys, ", ", &order_by_expr(&1, sources, query))]
+      order_bys = order_by_concat(distinct, order_bys)
+      [" ORDER BY " | intersperse_map(order_bys, ", ", &order_by_expr(&1, sources, query))]
     end
+
+    defp order_by_concat([head | left], [head | right]), do: [head | order_by_concat(left, right)]
+    defp order_by_concat(left, right), do: left ++ right
 
     defp order_by_expr({dir, expr}, sources, query) do
       str = expr(expr, sources, query)
@@ -546,7 +565,7 @@ if Code.ensure_loaded?(Postgrex) do
     defp operator_to_boolean(:or), do: " OR "
 
     defp parens_for_select([first_expr | _] = expr) do
-      if is_binary(first_expr) and String.starts_with?(first_expr, ["SELECT", "select"]) do
+      if is_binary(first_expr) and String.match?(first_expr, ~r/^\s*select/i) do
         [?(, expr, ?)]
       else
         expr
@@ -675,7 +694,7 @@ if Code.ensure_loaded?(Postgrex) do
       case handle_call(fun, length(args)) do
         {:binary_op, op} ->
           [left, right] = args
-          [op_to_binary(left, sources, query), op | op_to_binary(right, sources, query)]
+          [maybe_paren(left, sources, query), op | maybe_paren(right, sources, query)]
         {:fun, fun} ->
           [fun, ?(, modifier, intersperse_map(args, ", ", &expr(&1, sources, query)), ?)]
       end
@@ -695,7 +714,7 @@ if Code.ensure_loaded?(Postgrex) do
     end
 
     defp expr(%Ecto.Query.Tagged{value: other, type: type}, sources, query) do
-      [expr(other, sources, query), ?:, ?: | tagged_to_db(type)]
+      [maybe_paren(other, sources, query), ?:, ?: | tagged_to_db(type)]
     end
 
     defp expr(nil, _sources, _query),   do: "NULL"
@@ -737,13 +756,13 @@ if Code.ensure_loaded?(Postgrex) do
        interval(1, interval, sources, query), ?)]
     end
 
-    defp op_to_binary({op, _, [_, _]} = expr, sources, query) when op in @binary_ops,
+    defp maybe_paren({op, _, [_, _]} = expr, sources, query) when op in @binary_ops,
       do: paren_expr(expr, sources, query)
 
-    defp op_to_binary({:is_nil, _, [_]} = expr, sources, query),
+    defp maybe_paren({:is_nil, _, [_]} = expr, sources, query),
       do: paren_expr(expr, sources, query)
 
-    defp op_to_binary(expr, sources, query),
+    defp maybe_paren(expr, sources, query),
       do: expr(expr, sources, query)
 
     defp returning(%{select: nil}, _sources),
@@ -1230,6 +1249,10 @@ if Code.ensure_loaded?(Postgrex) do
     defp quote_boolean(false), do: "FALSE"
     defp quote_boolean(value), do: error!(nil, "bad boolean value #{value}")
 
+    defp format_to_sql(:text), do: "FORMAT TEXT"
+    defp format_to_sql(:map), do: "FORMAT JSON"
+    defp format_to_sql(:yaml), do: "FORMAT YAML"
+
     defp single_quote(value), do: [?', escape_string(value), ?']
 
     defp intersperse_map(list, separator, mapper, acc \\ [])
@@ -1282,7 +1305,6 @@ if Code.ensure_loaded?(Postgrex) do
     defp ecto_to_db(:naive_datetime),      do: "timestamp"
     defp ecto_to_db(:naive_datetime_usec), do: "timestamp"
     defp ecto_to_db(atom) when is_atom(atom),  do: Atom.to_string(atom)
-    defp ecto_to_db(str)  when is_binary(str), do: str
     defp ecto_to_db(type) do
       raise ArgumentError,
             "unsupported type `#{inspect(type)}`. The type can either be an atom, a string " <>

@@ -141,11 +141,6 @@ defmodule Ecto.Migration do
   type by the various database adapters. For example, `:string` is
   converted to `:varchar`, `:binary` to `:bytea` or `:blob`, and so on.
 
-  Similarly, you can pass any field type supported by your database
-  as long as it maps to an Ecto type. For instance, for an Ecto schema
-  with the field `:string`, the database migration type can be any of
-  `:text`, `:char` or `:varchar` (the default).
-
   In particular, note that:
 
     * the `:string` type in migrations by default has a limit of 255 characters.
@@ -157,10 +152,10 @@ defmodule Ecto.Migration do
       to impose a limit, pass the `:size` option accordingly. In MySQL, passing
       the size option changes the underlying field from "blob" to "varbinary"
 
-  Remember, atoms can contain arbitrary characters by enclosing in
-  double quotes the characters following the colon. So, if you want to use a
-  field type with database-specific options, you can pass atoms containing
-  these options like `:"int unsigned"`, `:"time without time zone"`, etc.
+  Any other type will be given as is to the database. For example, you
+  can use `:text`, `:char`, or `:varchar` as types. Types that have spaces
+  in their names can be wrapped in double quotes, such as `:"int unsigned"`,
+  `:"time without time zone"`, etc.
 
   ## Executing and flushing
 
@@ -287,7 +282,7 @@ defmodule Ecto.Migration do
   but not true for MySQL, as the latter does not support DDL transactions.
 
   In some rare cases, you may need to execute some common behavior after beginning
-  a migration transaction, or before commiting that transaction. For instance, one
+  a migration transaction, or before committing that transaction. For instance, one
   might desire to set a `lock_timeout` for each lock in the migration transaction.
 
   You can do so by defining `c:after_begin/0` and `c:before_commit/0` callbacks to
@@ -1182,7 +1177,7 @@ defmodule Ecto.Migration do
     * `:exclude` - An exclusion constraint expression. Required when creating an exclusion constraint.
     * `:prefix` - The prefix for the table.
     * `:validate` - Whether or not to validate the constraint on creation (true by default). Only
-       available in PostgreSQL, and should be followed by a command to validate the foreign key in
+       available in PostgreSQL, and should be followed by a command to validate the new constraint in
        a following migration if false.
 
   """
@@ -1234,6 +1229,21 @@ defmodule Ecto.Migration do
 
   defp validate_type!(%Reference{} = reference) do
     reference
+  end
+
+  defp validate_type!(type) do
+    raise ArgumentError, """
+    invalid migration type: #{inspect(type)}. Expected one of:
+
+      * an atom, such as :string
+      * a quoted atom, such as :"integer unsigned"
+      * an Ecto.Type, such as Ecto.UUID
+      * a tuple of the above, such as {:array, :integer} or {:array, Ecto.UUID}
+      * a reference, such as references(:users)
+
+    All Ecto types are allowed and properly translated.
+    All other types are sent to the database as is.
+    """
   end
 
   defp validate_index_opts!(opts) when is_list(opts) do
